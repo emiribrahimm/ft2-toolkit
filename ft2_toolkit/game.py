@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+from contextlib import contextmanager
 from ctypes import wintypes
 
 from . import win32
@@ -11,6 +12,10 @@ MODULE_NAME = "GameAssembly.dll"
 
 
 class GameError(Exception):
+    pass
+
+
+class NotReady(GameError):
     pass
 
 
@@ -77,12 +82,26 @@ class GameProcess:
         return code.value != win32.STILL_ACTIVE
 
     def read(self, rva: int, size: int) -> bytes:
+        return self.read_abs(self.base + rva, size)
+
+    def read_abs(self, address: int, size: int) -> bytes:
         buffer = ctypes.create_string_buffer(size)
         read = ctypes.c_size_t()
-        address = self.base + rva
         if not win32.ReadProcessMemory(self._handle, address, buffer, size, ctypes.byref(read)) or read.value != size:
             raise GameError(f"Failed to read memory at 0x{address:X} (error {ctypes.get_last_error()}).")
         return buffer.raw
+
+    def read_pointer(self, address: int) -> int:
+        value = struct.unpack("<Q", self.read_abs(address, 8))[0]
+        if value >> 32 == 0:
+            raise NotReady("The game is still loading.")
+        return value
+
+    def write_abs(self, address: int, data: bytes) -> None:
+        written = ctypes.c_size_t()
+        if not win32.WriteProcessMemory(self._handle, address, data, len(data), ctypes.byref(written)) \
+                or written.value != len(data):
+            raise GameError(f"Failed to write memory at 0x{address:X} (error {ctypes.get_last_error()}).")
 
     def read_float(self, rva: int) -> float:
         return struct.unpack("<f", self.read(rva, 4))[0]
@@ -106,6 +125,51 @@ class GameProcess:
 
     def write_int32(self, rva: int, value: int) -> None:
         self.write(rva, struct.pack("<i", value))
+
+    def _thread_ids(self) -> list[int]:
+        snapshot = win32.CreateToolhelp32Snapshot(win32.TH32CS_SNAPTHREAD, 0)
+        if snapshot == win32.INVALID_HANDLE_VALUE:
+            raise GameError(f"Failed to list game threads (error {ctypes.get_last_error()}).")
+        try:
+            entry = win32.THREADENTRY32()
+            entry.dwSize = ctypes.sizeof(entry)
+            ids = []
+            ok = win32.Thread32First(snapshot, ctypes.byref(entry))
+            while ok:
+                if entry.th32OwnerProcessID == self.pid:
+                    ids.append(entry.th32ThreadID)
+                ok = win32.Thread32Next(snapshot, ctypes.byref(entry))
+            return ids
+        finally:
+            win32.CloseHandle(snapshot)
+
+    @staticmethod
+    def _thread_rip(handle: int) -> int | None:
+        buffer = ctypes.create_string_buffer(win32.CONTEXT_SIZE + 16)
+        context = (ctypes.addressof(buffer) + 15) & ~15
+        ctypes.c_uint32.from_address(context + win32.CONTEXT_FLAGS_OFFSET).value = win32.CONTEXT_CONTROL
+        if not win32.GetThreadContext(handle, context):
+            return None
+        return ctypes.c_uint64.from_address(context + win32.CONTEXT_RIP_OFFSET).value
+
+    @contextmanager
+    def frozen(self):
+        handles = []
+        try:
+            for tid in self._thread_ids():
+                handle = win32.OpenThread(win32.THREAD_SUSPEND_RESUME | win32.THREAD_GET_CONTEXT, False, tid)
+                if not handle:
+                    continue
+                if win32.SuspendThread(handle) == 0xFFFFFFFF:
+                    win32.CloseHandle(handle)
+                    continue
+                handles.append(handle)
+            rips = [rip - self.base for rip in map(self._thread_rip, handles) if rip is not None]
+            yield rips
+        finally:
+            for handle in handles:
+                win32.ResumeThread(handle)
+                win32.CloseHandle(handle)
 
     def close(self) -> None:
         if self._handle:

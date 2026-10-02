@@ -12,9 +12,17 @@ PAGE_EXECUTE_READWRITE = 0x40
 STILL_ACTIVE = 259
 
 TH32CS_SNAPPROCESS = 0x00000002
+TH32CS_SNAPTHREAD = 0x00000004
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+THREAD_SUSPEND_RESUME = 0x0002
+THREAD_GET_CONTEXT = 0x0008
+CONTEXT_CONTROL = 0x00100001
+CONTEXT_SIZE = 0x4D0
+CONTEXT_FLAGS_OFFSET = 0x30
+CONTEXT_RIP_OFFSET = 0xF8
 
 ERROR_ALREADY_EXISTS = 183
 
@@ -54,6 +62,18 @@ class MODULEENTRY32W(ctypes.Structure):
     ]
 
 
+class THREADENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ThreadID", wintypes.DWORD),
+        ("th32OwnerProcessID", wintypes.DWORD),
+        ("tpBasePri", wintypes.LONG),
+        ("tpDeltaPri", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
 def _fn(dll, name, restype, *argtypes):
     f = getattr(dll, name)
     f.restype = restype
@@ -80,6 +100,13 @@ Process32FirstW = _fn(kernel32, "Process32FirstW", wintypes.BOOL, wintypes.HANDL
 Process32NextW = _fn(kernel32, "Process32NextW", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
 Module32FirstW = _fn(kernel32, "Module32FirstW", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(MODULEENTRY32W))
 Module32NextW = _fn(kernel32, "Module32NextW", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(MODULEENTRY32W))
+
+Thread32First = _fn(kernel32, "Thread32First", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(THREADENTRY32))
+Thread32Next = _fn(kernel32, "Thread32Next", wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(THREADENTRY32))
+OpenThread = _fn(kernel32, "OpenThread", wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+SuspendThread = _fn(kernel32, "SuspendThread", wintypes.DWORD, wintypes.HANDLE)
+ResumeThread = _fn(kernel32, "ResumeThread", wintypes.DWORD, wintypes.HANDLE)
+GetThreadContext = _fn(kernel32, "GetThreadContext", wintypes.BOOL, wintypes.HANDLE, ctypes.c_void_p)
 
 CreateMutexW = _fn(kernel32, "CreateMutexW", wintypes.HANDLE, wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
 GetCurrentThreadId = _fn(kernel32, "GetCurrentThreadId", wintypes.DWORD)
