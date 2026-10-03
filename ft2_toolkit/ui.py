@@ -309,6 +309,12 @@ class MainWindow:
     def close(self) -> None:
         self.hotkeys.stop()
         self.save_settings()
+        if self.game is not None:
+            for action in ACTIONS:
+                try:
+                    action.release(self.game)
+                except Exception:
+                    pass
         for f in self.features:
             f.release()
         if self.game is not None:

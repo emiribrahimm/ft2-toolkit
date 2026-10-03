@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .game import GameProcess
+from .patching import PatchSet, byte_site
+
+HERB_ANY_SEASON = PatchSet([byte_site(0x6BB327, "0F84910E0000", "909090909090")])
 
 FARM_DATA_TYPEINFO = 0x22BB340
 CROP_TYPEINFO = 0x22BB298
@@ -87,7 +90,7 @@ def grow_herbs(game: GameProcess, farm: int) -> int:
         if _u8(game, herb + 0x20) in (0, 1):
             _put32(game, herb + 0x30, _u32(game, _definition(game, herb) + 0xD4))
             _put8(game, herb + 0x20, 2)
-            count += 1
+        count += 1
     return count
 
 
@@ -147,8 +150,16 @@ class InstantAction:
     label: str
     noun: str
     run: Callable[[GameProcess, int], int]
+    patch: PatchSet | None = None
+
+    def release(self, game: GameProcess) -> None:
+        if self.patch is not None:
+            self.patch.revert(game)
 
     def __call__(self, game: GameProcess) -> str:
+        if self.patch is not None:
+            self.patch.verify(game)
+            self.patch.apply(game)
         with game.frozen():
             count = self.run(game, _farm(game))
         if count == 0:
@@ -159,7 +170,7 @@ class InstantAction:
 ACTIONS = (
     InstantAction("Grow crops", "crops", grow_crops),
     InstantAction("Grow flowers", "flowers", grow_flowers),
-    InstantAction("Grow herbs", "herbs", grow_herbs),
+    InstantAction("Grow herbs", "herbs", grow_herbs, HERB_ANY_SEASON),
     InstantAction("Ripen trees", "trees", ripen_trees),
     InstantAction("Animals ready", "animals", ready_animals),
     InstantAction("Fish ready", "ponds", ready_fish),
