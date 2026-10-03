@@ -10,10 +10,11 @@ from .features import Feature, Slider, create_all
 from .features.tractor_speed import TractorSpeed
 from .game import GameProcess
 from .hotkey import HotkeyListener
+from .session import Session, detect
 from .settings import Settings
 
 APP_NAME = "FT2 Toolkit"
-POLL_MS = 1000
+POLL_MS = 500
 HOTKEY_TOGGLE_TRACTOR = 1
 
 
@@ -73,10 +74,11 @@ class ToggleSwitch(tk.Canvas):
 
 
 class StepSlider(tk.Frame):
-    def __init__(self, parent, feature: Feature, slider: Slider):
+    def __init__(self, parent, feature: Feature, slider: Slider, guard):
         super().__init__(parent, bg=Theme.CARD)
         self.feature = feature
         self.slider = slider
+        self.guard = guard
         if slider.label:
             tk.Label(self, text=slider.label, font=Theme.SMALL, fg=Theme.MUTED, bg=Theme.CARD,
                      width=8, anchor="w").pack(side=tk.LEFT)
@@ -93,6 +95,7 @@ class StepSlider(tk.Frame):
         self.sync()
 
     def _on_scale(self, raw) -> None:
+        self.guard()
         self.feature.set_slider(self.slider.key, self.slider.steps[int(float(raw))])
 
     def sync(self) -> None:
@@ -103,9 +106,10 @@ class StepSlider(tk.Frame):
 
 
 class FeatureCard(tk.Frame):
-    def __init__(self, parent, feature: Feature, width: int):
+    def __init__(self, parent, feature: Feature, width: int, guard):
         super().__init__(parent, bg=Theme.CARD, padx=Theme.px(14), pady=Theme.px(10))
         self.feature = feature
+        self.guard = guard
         self.columnconfigure(0, weight=1)
 
         tk.Label(self, text=feature.title, font=Theme.CARD_TITLE, fg=Theme.TEXT, bg=Theme.CARD,
@@ -113,13 +117,13 @@ class FeatureCard(tk.Frame):
         tk.Label(self, text=feature.description, font=Theme.SMALL, fg=Theme.MUTED, bg=Theme.CARD,
                  wraplength=width - Theme.px(28 + 60), justify="left", anchor="w").grid(
             row=1, column=0, sticky="w", pady=(Theme.px(2), 0))
-        self.toggle = ToggleSwitch(self, feature.set_enabled)
+        self.toggle = ToggleSwitch(self, self._toggle)
         self.toggle.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(Theme.px(8), 0))
 
         row = 2
         for slider in feature.sliders:
-            StepSlider(self, feature, slider).grid(row=row, column=0, columnspan=2, sticky="ew",
-                                                   pady=(Theme.px(6), 0))
+            StepSlider(self, feature, slider, guard).grid(row=row, column=0, columnspan=2, sticky="ew",
+                                                          pady=(Theme.px(6), 0))
             row += 1
 
         self.state = tk.Label(self, font=Theme.SMALL, bg=Theme.CARD, anchor="w", justify="left",
@@ -134,6 +138,10 @@ class FeatureCard(tk.Frame):
         feature.subscribe(self.sync)
         self.sync()
 
+    def _toggle(self, value: bool) -> None:
+        self.guard()
+        self.feature.set_enabled(value)
+
     def sync(self) -> None:
         f = self.feature
         self.toggle.set(f.enabled)
@@ -142,7 +150,7 @@ class FeatureCard(tk.Frame):
         elif f.waiting:
             text, color = "Waiting for the game to finish loading…", Theme.WARNING
         elif not f.is_attached:
-            text, color = ("On · applies when the game starts", Theme.WARNING) if f.enabled else ("Off", Theme.MUTED)
+            text, color = ("On · applies on a single-player farm", Theme.WARNING) if f.enabled else ("Off", Theme.MUTED)
         elif f.enabled:
             text, color = "On · applied to the game", Theme.ACCENT
         else:
@@ -183,6 +191,7 @@ class MainWindow:
         self.features = [f for _, features in self.tabs for f in features]
         self.tractor_speed = next(f for f in self.features if isinstance(f, TractorSpeed))
         self.game: GameProcess | None = None
+        self.session = Session.NO_FARM
 
         for f in self.features:
             f.load(self.settings.feature(f.key))
@@ -231,10 +240,11 @@ class MainWindow:
             if features is None:
                 InstantCard(page, width, self.run_action).pack(fill=tk.X, pady=(0, Theme.px(8)))
             for f in features or ():
-                FeatureCard(page, f, width).pack(fill=tk.X, pady=(0, Theme.px(8)))
+                FeatureCard(page, f, width, self.sync_session).pack(fill=tk.X, pady=(0, Theme.px(8)))
             self.pages.append(page)
 
-        tk.Label(body, text="Settings are saved automatically. The game returns to normal when this window closes.",
+        tk.Label(body, text="Single-player only: everything pauses in online and co-op sessions. Settings are saved "
+                            "automatically and the game returns to normal when this window closes.",
                  font=Theme.SMALL, fg=Theme.MUTED, bg=Theme.BACKGROUND, wraplength=width, justify="left",
                  anchor="w").pack(fill=tk.X, pady=(Theme.px(2), 0))
 
@@ -249,8 +259,11 @@ class MainWindow:
         self.check_hotkeys()
 
     def run_action(self, action: InstantAction) -> dict:
-        if self.game is None:
-            return {"text": "Start Farm Together 2 and load your farm first.", "fg": Theme.WARNING}
+        session = self.sync_session()
+        if session is Session.MULTIPLAYER:
+            return {"text": "Not available in online or co-op sessions.", "fg": Theme.ERROR}
+        if session is not Session.SOLO:
+            return {"text": "Start Farm Together 2 and load a single-player farm first.", "fg": Theme.WARNING}
         try:
             return {"text": action(self.game), "fg": Theme.ACCENT}
         except Exception as e:
@@ -263,19 +276,40 @@ class MainWindow:
                           fg=Theme.TEXT if active else Theme.MUTED)
         self.pages[index].tkraise()
 
-    def poll(self) -> None:
+    def sync_session(self) -> Session:
         if self.game is not None and self.game.has_exited:
-            for f in self.features:
-                f.detach()
-            self.game.close()
-            self.game = None
-
-        if self.game is None:
-            self.game = GameProcess.try_attach()
-            if self.game is not None:
+            self.drop_game()
+        session = detect(self.game) if self.game is not None else Session.NO_FARM
+        if session is not self.session:
+            previous, self.session = self.session, session
+            if session is Session.SOLO:
                 for f in self.features:
                     f.attach(self.game)
-        else:
+            elif previous is Session.SOLO:
+                self.pause()
+            self.update_status()
+        return session
+
+    def pause(self) -> None:
+        for action in ACTIONS:
+            try:
+                action.release(self.game)
+            except Exception:
+                pass
+        for f in self.features:
+            f.suspend()
+
+    def drop_game(self) -> None:
+        for f in self.features:
+            f.detach()
+        self.game.close()
+        self.game = None
+        self.session = Session.NO_FARM
+
+    def poll(self) -> None:
+        if self.game is None:
+            self.game = GameProcess.try_attach()
+        if self.sync_session() is Session.SOLO:
             for f in self.features:
                 if f.waiting:
                     f.attach(self.game)
@@ -287,6 +321,7 @@ class MainWindow:
         try:
             while True:
                 if self.hotkeys.pressed.get_nowait() == HOTKEY_TOGGLE_TRACTOR:
+                    self.sync_session()
                     self.tractor_speed.set_enabled(not self.tractor_speed.enabled)
                     winsound.MessageBeep(winsound.MB_ICONASTERISK)
         except queue.Empty:
@@ -294,12 +329,16 @@ class MainWindow:
         self.root.after(100, self.check_hotkeys)
 
     def update_status(self) -> None:
-        if self.game is not None:
-            self.status_dot.config(fg=Theme.ACCENT)
-            self.status_text.config(text=f"Connected to Farm Together 2 (PID {self.game.pid})")
+        if self.game is None:
+            color, text = Theme.WARNING, "Waiting for Farm Together 2… it will connect automatically."
+        elif self.session is Session.SOLO:
+            color, text = Theme.ACCENT, f"Connected to a single-player farm (PID {self.game.pid})"
+        elif self.session is Session.MULTIPLAYER:
+            color, text = Theme.ERROR, "Online or co-op session detected · everything is paused"
         else:
-            self.status_dot.config(fg=Theme.WARNING)
-            self.status_text.config(text="Waiting for Farm Together 2… it will connect automatically.")
+            color, text = Theme.WARNING, "Connected · waiting for a single-player farm"
+        self.status_dot.config(fg=color)
+        self.status_text.config(text=text)
 
     def save_settings(self) -> None:
         for f in self.features:

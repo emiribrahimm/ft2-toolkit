@@ -76,6 +76,11 @@ class Feature:
             self._run(lambda: self.revert(game))
         self._game = None
 
+    def suspend(self) -> None:
+        self.release()
+        self.waiting = False
+        self._changed()
+
     def set_enabled(self, enabled: bool) -> None:
         if enabled == self.enabled:
             return
