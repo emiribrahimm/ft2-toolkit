@@ -5,6 +5,7 @@ import tkinter as tk
 import winsound
 
 from . import win32
+from .farm import ACTIONS, InstantAction
 from .features import Feature, Slider, create_all
 from .features.tractor_speed import TractorSpeed
 from .game import GameProcess
@@ -149,6 +150,29 @@ class FeatureCard(tk.Frame):
         self.state.config(text=text, fg=color)
 
 
+class InstantCard(tk.Frame):
+    def __init__(self, parent, width: int, run):
+        super().__init__(parent, bg=Theme.CARD, padx=Theme.px(14), pady=Theme.px(10))
+        tk.Label(self, text="Instant grow", font=Theme.CARD_TITLE, fg=Theme.TEXT, bg=Theme.CARD,
+                 anchor="w").pack(fill=tk.X)
+        tk.Label(self, text="Makes everything of that kind on your farm ready to harvest right away.",
+                 font=Theme.SMALL, fg=Theme.MUTED, bg=Theme.CARD, wraplength=width - Theme.px(28),
+                 justify="left", anchor="w").pack(fill=tk.X, pady=(Theme.px(2), Theme.px(8)))
+        grid = tk.Frame(self, bg=Theme.CARD)
+        grid.pack(fill=tk.X)
+        grid.columnconfigure((0, 1), weight=1, uniform="buttons")
+        self.result = tk.Label(self, text="", font=Theme.SMALL, fg=Theme.MUTED, bg=Theme.CARD, anchor="w",
+                               wraplength=width - Theme.px(28), justify="left")
+        for index, action in enumerate(ACTIONS):
+            button = tk.Label(grid, text=action.label, font=Theme.TAB, fg="white", bg=Theme.ACCENT,
+                              pady=Theme.px(8), cursor="hand2")
+            button.grid(row=index // 2, column=index % 2, sticky="ew", padx=Theme.px(3), pady=Theme.px(3))
+            button.bind("<Button-1>", lambda e, a=action: self.result.config(**run(a)))
+            button.bind("<Enter>", lambda e, b=button: b.config(bg=Theme.ACCENT_HOVER))
+            button.bind("<Leave>", lambda e, b=button: b.config(bg=Theme.ACCENT))
+        self.result.pack(fill=tk.X, pady=(Theme.px(8), 0))
+
+
 class MainWindow:
     CONTENT_WIDTH = 460
 
@@ -196,7 +220,7 @@ class MainWindow:
         pages.rowconfigure(0, weight=1)
         self.tab_buttons: list[tk.Label] = []
         self.pages: list[tk.Frame] = []
-        for index, (name, features) in enumerate(self.tabs):
+        for index, (name, features) in enumerate(self.tabs + [("Farm", None)]):
             button = tk.Label(tab_bar, text=name, font=Theme.TAB, fg=Theme.MUTED, bg=Theme.BACKGROUND,
                               padx=Theme.px(10), pady=Theme.px(5), cursor="hand2")
             button.pack(side=tk.LEFT, padx=(0, Theme.px(4)))
@@ -204,7 +228,9 @@ class MainWindow:
             self.tab_buttons.append(button)
             page = tk.Frame(pages, bg=Theme.BACKGROUND, width=width)
             page.grid(row=0, column=0, sticky="nsew")
-            for f in features:
+            if features is None:
+                InstantCard(page, width, self.run_action).pack(fill=tk.X, pady=(0, Theme.px(8)))
+            for f in features or ():
                 FeatureCard(page, f, width).pack(fill=tk.X, pady=(0, Theme.px(8)))
             self.pages.append(page)
 
@@ -221,6 +247,14 @@ class MainWindow:
         self.update_status()
         self.poll()
         self.check_hotkeys()
+
+    def run_action(self, action: InstantAction) -> dict:
+        if self.game is None:
+            return {"text": "Start Farm Together 2 and load your farm first.", "fg": Theme.WARNING}
+        try:
+            return {"text": action(self.game), "fg": Theme.ACCENT}
+        except Exception as e:
+            return {"text": "⚠ " + str(e), "fg": Theme.ERROR}
 
     def show_tab(self, index: int) -> None:
         for i, button in enumerate(self.tab_buttons):

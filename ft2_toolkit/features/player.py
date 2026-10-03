@@ -16,38 +16,26 @@ AREA_STEPS = (5, 7, 9)
 
 
 class MovementSpeed(PatchFeature):
-    key = "movementSpeed"
+    key = "walkSpeed"
     title = "Movement speed"
-    description = "Faster walking and running, and faster driving when you steer the tractor yourself."
+    description = "Faster walking, running and driving when you steer a vehicle yourself."
     data_rva, code_rva = cave_block(7)
     data_size = DATA_SIZE
 
     def __init__(self):
         super().__init__()
-        self.sliders = [
-            Slider("onFoot", MOVE_STEPS, 1.5, "On foot"),
-            Slider("driving", MOVE_STEPS, 1.5, "Driving"),
-        ]
+        self.sliders = [Slider("multiplier", MOVE_STEPS, 1.5)]
 
     def build(self) -> PatchSet:
-        foot, vehicle, clamp = self.data_rva, self.data_rva + 4, self.data_rva + 8
+        speed, clamp = self.data_rva, self.data_rva + 4
         asm = Asm(self.code_rva)
         walk = asm.here
         asm.raw("F3440F106B30")
-        asm.raw("4C8B9398000000")
-        asm.raw("4D85D2")
-        asm.short("74", "foot")
-        asm.raw("41807A1A00")
-        asm.short("75", "vehicle")
-        asm.label("foot")
-        asm.rip("F3440F592D", foot)
-        asm.jmp(0x3431EC)
-        asm.label("vehicle")
-        asm.rip("F3440F592D", vehicle)
+        asm.rip("F3440F592D", speed)
         asm.jmp(0x3431EC)
         sprint = asm.here
         asm.raw("F30F107014")
-        asm.rip("F30F5935", foot)
+        asm.rip("F30F5935", speed)
         asm.jmp(0x343528)
         return PatchSet([
             jump_site(0x3431E6, "F3440F106B30", walk),
@@ -56,8 +44,45 @@ class MovementSpeed(PatchFeature):
         ], {self.code_rva: asm.build()})
 
     def write_data(self, game: GameProcess) -> None:
-        values = (self.slider("onFoot").value, self.slider("driving").value, 1000.0)
-        game.write(self.data_rva, struct.pack("<3f", *values))
+        game.write(self.data_rva, struct.pack("<2f", self.slider("multiplier").value, 1000.0))
+
+
+class CameraDistance(PatchFeature):
+    key = "cameraDistance"
+    title = "Camera distance"
+    description = "Lets the camera sit further away from your character at every zoom level."
+    data_rva, code_rva = cave_block(0)
+    data_size = DATA_SIZE
+
+    def __init__(self):
+        super().__init__()
+        self.sliders = [Slider("multiplier", MOVE_STEPS, 1.5)]
+
+    def build(self) -> PatchSet:
+        asm = Asm(self.code_rva)
+        stub = asm.here
+        asm.raw("F3440F10BFEC000000")
+        asm.rip("F3440F593D", self.data_rva)
+        asm.jmp(0x3443CD)
+        return PatchSet([jump_site(0x3443C4, "F3440F10BFEC000000", stub)], {self.code_rva: asm.build()})
+
+    def write_data(self, game: GameProcess) -> None:
+        game.write(self.data_rva, struct.pack("<f", self.slider("multiplier").value))
+
+
+class FastTransitions(PatchFeature):
+    key = "fastTransitions"
+    title = "Fast transitions"
+    description = "Entering the house or town, teleporting and getting on vehicles take a fraction of the time."
+    data_rva, _ = cave_block(1)
+    data_size = DATA_SIZE
+    sites = ((0x7C67B4, 0x1C02BFC, 0), (0x7C6803, 0x1C02BFC, 0), (0x7C6AE9, 0x1C02BFC, 0), (0x7C6B47, 0x1C02C00, 4))
+
+    def build(self) -> PatchSet:
+        return PatchSet([rip_site(rva, "0F2F0D", target, self.data_rva + slot) for rva, target, slot in self.sites])
+
+    def write_data(self, game: GameProcess) -> None:
+        game.write(self.data_rva, struct.pack("<2f", 0.5 / 5, 0.7 / 5))
 
 
 class VehicleArea(Feature):
